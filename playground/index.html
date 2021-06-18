@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <div id="counter">
+    </div>
+    <div id="render">
+    </div>
+    <script src="./dist/latest.js">
+    </script>
+    <script>
+        const counterApp = new App('#counter')
+        const renderApp = new App('#counter')
+
+        const counter = new ReactiveVariable(0);
+        const btn = counterApp.createElement('button')
+        btn.setInnerHTML('Click me')
+        btn.mount();
+        btn.addEventListener('click', () => counter.value++);
+        
+        const span = counterApp.createElement('span');
+        span.setInnerHTML(counter);
+        span.mount();
+
+        const el1 = renderApp.createElement('div')
+        el1.mount();
+
+        const el2 = renderApp.createElement('p', el1)
+        const els = [];
+
+        // I have not benchmarked other frameworks with rendering 10 000 elements, adding an event listener to every one and unmounting them,
+        // but i am wondering how ok this is
+        for(let i = 0; i < 10_000; i++) {
+            const el = renderApp.createElement('p', el1)
+            if(i % 2 === 0) els.push(el)
+            el.setInnerHTML(i)
+            el.mount()
+            el.addEventListener('click', () => {
+                el.unmount()
+                console.log(`Removed element with innerHTML: ${el.$el.innerHTML}`)
+            }, false)
+        }
+
+        // Here is something that had terrible performance when exceeding 5000 elements on my Mac
+        // let lastEl = el1;
+        // for(let i = 0; i < 6000; i++) {
+        //     const el = app.createElement('p', lastEl)
+        //     if(i % 2 === 0) els.push(el)
+        //     el.setInnerHTML(i)
+        //     el.mount()
+        //     el.addEventListener('click', () => {
+        //         el.unmount()
+        //         console.log(`Removed element with innerHTML: ${el.$el.innerHTML}`)
+        //     }, false)
+        //     lastEl = el;
+        // }
+
+        setTimeout(() => {
+            els.forEach(el => el.setInnerHTML('CHANGED'))
+            setTimeout(() => {
+                // Removing every element that was an even number in the for loop
+                els.forEach(el => { if(el.isMounted)el.unmount()})
+
+                const variable = new ReactiveVariable('super-id');
+                el1.setAttribute('id', variable)
+                
+                setTimeout(() => {
+                    const variable2 = new ReactiveVariable('foo');
+                    el2.setAttribute('placeholder', variable2)
+                    el1.setInnerHTML(variable2)
+
+                    el2.setInnerHTML('static')
+
+                    el2.onBeforeMount(() => {
+                        console.log('The <p> tag is going to be mounted')
+                    })
+                    
+                    el2.onMount((el) => {
+                        console.log('The <p> tag is mounted')
+                    })
+                    
+                    el2.onUnmount(() => {
+                        console.log('The <p> tag is unmounted!')
+                    })
+
+                    el2.mount();
+                    variable.value = 'SUPER_ID';
+
+                    setTimeout(() => {
+                        variable2.value = 'bar (inspect this element for a little "ReactiveVariable"-funfact)'
+                        el1.setAttribute('a-reactive-variable-is-not-app-dependent', counter)
+
+                        setTimeout(() => {
+                                // el2.unmount() Have to fix the first thing in the todo-list before this works nicely
+                        }, 1000);
+                    }, 2000);
+                }, 2000);
+            }, 2000);
+        }, 2000);
+    </script>
+</body>
+</html>
