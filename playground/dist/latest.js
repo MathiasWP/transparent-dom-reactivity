@@ -11,49 +11,27 @@
  * but the thing i mean when saying this is that these classes are not really ment to be used by programmers
  * themselves (even though they can) - but by a parser/compiler.
  *
- * Down below is an example of how some code could be compiled into using this approach:
- *
- * #### EXAMPLE START
- * A very, very simple example; the following example code (heavily inspired by Svelte):
- * <script>
- *      let myId = 'foo':
- *      let greeting = 'Hello world';
- *      setTimeout(() => {myId = 'bar'}, 1000);
- *
- *      function changeText() {
- *          world = 'Hello universe'
- *      }
- * </script>
- * <div id={myId} onclick={changeText}>
- *      <span>{greeting}</span>
- * </div>
- *
- * could for example be translated into the following code by this "engine" (note: simplified for readibility):
- * (also note that this example is not very accurate/optimal, mainly because of point 2 on the TODO list below)
- *
- * const myId = new Variable('foo);
- * const greeting = new Variable('Hello world');
- * setTimeout(() => {myId.value = 'bar'}, 1000);
- * function changeText() {
- *      world.value = 'Hello universe';
- * }
- *
- * const div = app.createElement('div');
- * div.setAttribute('id', myId);
- * div.addEventListener('click', changeText);
- * const span = app.createElement('span', div);
- * span.setInnerHTML(greeting);
- *
- * #### EXAMPLE END
  *
  * Important note: I am not saying that this is anywhere near the elegancy and insanity of frameworks like Svelte, Vue or React. This is a hobby project, and i am doing this to have fun.
  *
  * **TODO**
- * 1. Make children components be aware of when they are unmounted if they didn't perform the unmount themselves (e.g: changing the innerHTML in any parent component)
- * 2. Figure out how frameworks change Text (nodes)
- * 3. Make the ReactiveVariable much more reactive (currently you have to re-declare it for it to spot the change). Support for just changing a property in an object, or maybe just using "push" on an array in an ReactiveVariable could be nice
- * 4. General performance enhancements (remove e.g: remove use of forEach)
- * 5. A shit ton more i haven't thought of
+ * - Make children components be aware of when they are unmounted if they didn't perform the unmount themselves (e.g: changing the innerHTML in any parent component)
+ * - Support for Text (nodes) [DONE, i think]
+ * - Support for SVG
+ * - Make the ReactiveVariable much more reactive (currently you have to re-declare it for it to spot the change). Support for just changing a property in an object, or maybe just using "push" on an array in an ReactiveVariable could be nice
+ * - General performance enhancements (remove e.g: remove use of forEach)
+ * - A shit ton more i haven't thought of
+ *
+ * **DONE**
+ * - Make wrapper for Elements
+ * - Make ReactiveVariable which triggers reactivity
+ * - Make ReactiveVariable very dynamic and be dependent on other ReactiveVariables
+ * - Added a wrapper for returnValues when assigning something dynamic to a ReactiveVariable (makes it so that a reactive variable can be a function + easier to prevent bullshit)
+ * - Added some methods for dom-manipulations
+ *      -- Setting any attribute
+ *      -- Conditional rendering
+ *      -- Appending text nodes and updating them
+ *      -- Setting innerHTML (not finished)
  */
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
@@ -65,37 +43,58 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 // Couple of global things
-let globalVariableId = 0; // Necessary
-const allReactiveVariables = new Map(); // Maybe useful
+let globalVariableId = 0;
+let globalTextNodeId = 0;
+const allReactiveVariables = new Map(); // Not used, but maybe useful
+const allGlobalTextNodes = new Map();
+class returnValueFunction {
+    constructor(valueFunction) {
+        this.valueFunction = valueFunction;
+    }
+    getValue() {
+        return this.valueFunction();
+    }
+}
 /**
  * @description A reactive wrapper for variables.
  * Only a ReactiveVariable will cause changes on a ElementWrapper.
  */
 class ReactiveVariable {
-    constructor(value) {
-        // All actions to perform when the variable changes
-        // [ElementWrapper, action-callback, action-uid, action-parameters]
+    constructor(value, dependencies) {
         this.actions = [];
         this.id = globalVariableId++;
-        this._value = value;
+        this.setValue(value, dependencies);
         this.addToGlobalStorage();
     }
     addToGlobalStorage() {
         allReactiveVariables.set(this.id, this);
     }
-    set value(val) {
-        this._value = val;
+    reactToDependencies(dependencies) {
+        dependencies.forEach(rv => rv.addAction(null, this.setValue.bind(this), `${this.id}-1`, [this._value], true));
+        dependencies.forEach(rv => rv.addAction(null, this.performAllActionsFromLinkedElementWrappers.bind(this), `${this.id}-2`, [], true));
+    }
+    setValue(value, dependencies) {
+        this._value = value;
+        if (dependencies)
+            this.reactToDependencies(dependencies);
         this.triggerChangeChain();
     }
+    set value(val) {
+        this.setValue(val);
+    }
     get value() {
-        return this._value;
+        return this._value instanceof returnValueFunction ? this._value.getValue() : this._value instanceof ReactiveVariable ? this._value.value : this._value;
     }
     addAction(ew, action, bindingId, actionParams, transparentAction = false) {
         this.actions.push({ ew, action, bindingId, actionParams, transparentAction });
     }
+    removeAction(bindingId) {
+        this.actions = this.actions.filter(a => a.bindingId !== bindingId);
+    }
     performAllActionsFromLinkedElementWrappers() {
         this.actions.forEach(action => {
-            if (action.transparentAction || (!action.transparentAction && action.ew.isMounted))
+            var _a;
+            if (action.transparentAction || (!action.transparentAction && ((_a = action.ew) === null || _a === void 0 ? void 0 : _a.isMounted)))
                 action.action(...action.actionParams);
         });
     }
@@ -194,7 +193,7 @@ class ElementWrapper {
      * @param transparentAction Optional parameter - If action is transparent or not
      * @description Here we bind an action and all of the ReactiveVariables that it depends on.
      */
-    bindReactiveVariablesToActionIfNotAlready(actionUid, action, params, bindingInfo, transparentAction) {
+    bindReactiveVariablesToAction(actionUid, action, params, bindingInfo, transparentAction) {
         var _a;
         // Little shortcut if we have already binded the action and its ReactiveVariables
         const alreadyBindedCondition = (_a = bindingInfo[1]) === null || _a === void 0 ? void 0 : _a.every((bId) => this.reactiveVariableBindings.has(bId));
@@ -255,18 +254,40 @@ class ElementWrapper {
      */
     setAttribute(attr, val, rv = [], bindingIds) {
         const actionUid = attr + 'attr';
-        this.bindReactiveVariablesToActionIfNotAlready(actionUid, this.setAttribute, [attr, val], [rv, bindingIds]);
-        const realValue = typeof val === 'function' ? val() : val instanceof ReactiveVariable ? val.value : val;
+        this.bindReactiveVariablesToAction(actionUid, this.updateAttribute, [attr, val], [rv, bindingIds]);
+        this.updateAttribute(attr, val);
+    }
+    updateAttribute(attr, val) {
+        const realValue = val instanceof returnValueFunction ? val.getValue() : val instanceof ReactiveVariable ? val.value : val;
         this.$el.setAttribute(attr, realValue);
+    }
+    /**
+     * @description Appends and update single textNodes
+     */
+    appendText(text, id = -1, rv = [], bindingIds) {
+        const realId = id < 0 ? globalTextNodeId++ : id;
+        const actionUid = 'itext' + realId;
+        const textNode = document.createTextNode('');
+        this.bindReactiveVariablesToAction(actionUid, this.updateText, [text, textNode, false], [rv, bindingIds]);
+        this.updateText(text, textNode, true);
+    }
+    updateText(text, textNode, initialize) {
+        const realText = text instanceof returnValueFunction ? text.getValue() : text instanceof ReactiveVariable ? text.value : text;
+        textNode.nodeValue = realText;
+        if (initialize)
+            this.$el.appendChild(textNode);
     }
     /**
      * @description danger danger ;)
      */
-    setInnerHTML(text, rv = [], bindingIds) {
+    setInnerHTML(html, rv = [], bindingIds) {
         const actionUid = 'ihtml';
-        this.bindReactiveVariablesToActionIfNotAlready(actionUid, this.setInnerHTML, [text], [rv, bindingIds]);
-        const realText = typeof text === 'function' ? text() : text instanceof ReactiveVariable ? text.value : text;
-        this.$el.innerHTML = realText;
+        this.bindReactiveVariablesToAction(actionUid, this.updateInnerHTML, [html], [rv, bindingIds]);
+        this.updateInnerHTML(html);
+    }
+    updateInnerHTML(html) {
+        const realHtml = html instanceof returnValueFunction ? html.getValue() : html instanceof ReactiveVariable ? html.value : html;
+        this.$el.innerHTML = realHtml;
     }
 }
 /**
