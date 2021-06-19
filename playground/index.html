@@ -12,18 +12,18 @@
     <div id="render">
     </div>
     <script src="./dist/latest.js"></script>
-    <!-- <script src="../build/index.js"></script> -->
+    <!-- <script src="../build/index.js"></script -->>
     <script>
         const counterApp = new App('#counter')
         const renderApp = new App('#render')
 
-        const _counter = new ReactiveVariable(0);
-        const counter = new ReactiveVariable(new returnValueFunction(() => _counter.value + _counter.value), [_counter]);
-        const boolean = new ReactiveVariable(true);
+        const _counter = renderApp.declareVariable(0)
+        const counter = renderApp.declareVariable(new returnValueFunction(() => _counter.value + _counter.value), [_counter])
+        const arr = renderApp.declareVariable([1,2,3]);
         const btn = counterApp.createElement('button')
         btn.setInnerHTML('Click me')
         btn.mount();
-        btn.addEventListener('click', () => _counter.value++);
+        btn.addEventListener('click', () => {_counter.value++; arr.value = [...arr.value, arr.value.length + 1]});
         
         const span = counterApp.createElement('span');
         const text = () => counter.value
@@ -35,23 +35,21 @@
         el1.setInnerHTML('init ')
         span.appendText(' hello there, how are you? i am fine, ')
         span.appendText(_counter, -1, [_counter])
+        span.appendText(new returnValueFunction(() => ' arr: '))
+        span.appendText(new returnValueFunction(() => arr.value.join(', ')), -1, [arr])
         el1.appendText(counter, -1, [counter])
         span.appendText(' awesome')
         
         const condition = () => ((counter.value > 4 && _counter.value < 20) /* && boolean.value */)
-        el1.conditionallyRender(condition, [_counter, counter, boolean])
-        
+        el1.conditionallyRender(condition, [_counter, counter])
 
-        setTimeout(() => {
-            boolean.value = false
-        }, 4000);
 
         const el2 = renderApp.createElement('p', el1)
         const els = [];
 
         // I have not benchmarked other frameworks with rendering 10 000 elements, adding an event listener to every one and unmounting them,
         // but i am wondering how ok this is
-        for(let i = 0; i < 10_000; i++) {
+        for(let i = 0; i < 1_000; i++) {
             const el = renderApp.createElement('p')
             el.mount()
             if(i % 2 === 0) {
@@ -73,6 +71,8 @@
                 if(localCounter.value > 5) {el.unmount(); console.log(`Removed element with innerHTML: ${el.$el.innerHTML}`)}
             }, false)
         }
+
+        // els.forEach(el => el.unmount())
 
 
         // // Here is something that had terrible performance when exceeding 5000 elements on my Mac

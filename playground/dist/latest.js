@@ -47,6 +47,9 @@ let globalVariableId = 0;
 let globalTextNodeId = 0;
 const allReactiveVariables = new Map(); // Not used, but maybe useful
 const allGlobalTextNodes = new Map();
+function isPrimitive(val) {
+    return val !== Object(val);
+}
 class returnValueFunction {
     constructor(valueFunction) {
         this.valueFunction = valueFunction;
@@ -63,7 +66,9 @@ class ReactiveVariable {
     constructor(value, dependencies) {
         this.actions = [];
         this.id = globalVariableId++;
-        this.setValue(value, dependencies);
+        this.setValue(value);
+        if (dependencies)
+            this.reactToDependencies(dependencies);
         this.addToGlobalStorage();
     }
     addToGlobalStorage() {
@@ -73,17 +78,21 @@ class ReactiveVariable {
         dependencies.forEach(rv => rv.addAction(null, this.setValue.bind(this), `${this.id}-1`, [this._value], true));
         dependencies.forEach(rv => rv.addAction(null, this.performAllActionsFromLinkedElementWrappers.bind(this), `${this.id}-2`, [], true));
     }
-    setValue(value, dependencies) {
-        this._value = value;
+    setValue(val) {
+        this._value = val;
+        this.triggerChangeChain();
+    }
+    redeclareValue(value, dependencies) {
+        this.setValue(value);
         if (dependencies)
             this.reactToDependencies(dependencies);
-        this.triggerChangeChain();
     }
     set value(val) {
         this.setValue(val);
     }
     get value() {
-        return this._value instanceof returnValueFunction ? this._value.getValue() : this._value instanceof ReactiveVariable ? this._value.value : this._value;
+        const rawValue = this._value instanceof returnValueFunction ? this._value.getValue() : this._value instanceof ReactiveVariable ? this._value.value : this._value;
+        return rawValue;
     }
     addAction(ew, action, bindingId, actionParams, transparentAction = false) {
         this.actions.push({ ew, action, bindingId, actionParams, transparentAction });
@@ -120,10 +129,7 @@ class ElementWrapper {
         this.$el = document.createElement(tag);
         this.parent = parent;
     }
-    /**
-     * @description We do not use any "virtual dom" to perform changes in the dom, so all we could need rom the parent is its HTMLElement
-     */
-    get $parentRawEl() {
+    get $parentEl() {
         return this.parent instanceof ElementWrapper ? this.parent.$el : this.parent;
     }
     get trueMounted() {
@@ -166,10 +172,12 @@ class ElementWrapper {
         });
     }
     addToDOM() {
-        this.$parentRawEl.appendChild(this.$el);
+        var _a;
+        (_a = this.$parentEl) === null || _a === void 0 ? void 0 : _a.appendChild(this.$el);
     }
     removeFromDOM() {
-        this.$parentRawEl.removeChild(this.$el);
+        var _a;
+        (_a = this.$parentEl) === null || _a === void 0 ? void 0 : _a.removeChild(this.$el);
     }
     cleanUpGarbage() {
         // Removing any active event-listeners
@@ -295,6 +303,7 @@ class ElementWrapper {
  */
 class App {
     constructor(selector) {
+        this.reactiveVariables = new Map();
         const foundEl = document.querySelector(selector);
         if (!foundEl)
             throw Error('Root element not found');
@@ -303,5 +312,10 @@ class App {
     createElement(tag, parent = this.$root) {
         const el = new ElementWrapper(tag, parent);
         return el;
+    }
+    declareVariable(value, dependencies) {
+        const rv = new ReactiveVariable(value, dependencies);
+        this.reactiveVariables.set(rv.id, rv);
+        return rv;
     }
 }

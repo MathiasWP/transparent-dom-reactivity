@@ -43,6 +43,10 @@ type anyFunction = (...args: any) => any
 type conditionFunction = () => boolean
 type actionData = { ew: ElementWrapper | null, action: anyFunction, bindingId: string | number, actionParams: any, transparentAction: boolean }
 
+function isPrimitive(val: any): boolean {
+    return val !== Object(val);
+}
+
 class returnValueFunction {
     private valueFunction: anyFunction
 
@@ -66,7 +70,8 @@ class returnValueFunction {
 
     constructor(value: unknown | returnValueFunction | ReactiveVariable, dependencies?: ReactiveVariable[]) {
         this.id = globalVariableId++;
-        this.setValue(value, dependencies)
+        this.setValue(value);
+        if(dependencies) this.reactToDependencies(dependencies)
         this.addToGlobalStorage();
     }
     
@@ -79,10 +84,14 @@ class returnValueFunction {
         dependencies.forEach(rv => rv.addAction(null, this.performAllActionsFromLinkedElementWrappers.bind(this), `${this.id}-2`, [], true))
     }
 
-    setValue(value: unknown | returnValueFunction | ReactiveVariable, dependencies?: ReactiveVariable[]): void {
-        this._value = value;
-        if(dependencies) this.reactToDependencies(dependencies)
+    private setValue(val: any): void {
+        this._value = val;
         this.triggerChangeChain();
+    }
+
+    redeclareValue(value: unknown | returnValueFunction | ReactiveVariable, dependencies?: ReactiveVariable[]): void {
+        this.setValue(value);
+        if(dependencies) this.reactToDependencies(dependencies);
     }
 
     set value(val: any) {
@@ -90,7 +99,8 @@ class returnValueFunction {
     }
 
     get value(): any {
-        return this._value instanceof returnValueFunction ? this._value.getValue() : this._value instanceof ReactiveVariable ? this._value.value : this._value;
+        const rawValue =  this._value instanceof returnValueFunction ? this._value.getValue() : this._value instanceof ReactiveVariable ? this._value.value : this._value;
+        return rawValue
     }
 
     addAction(ew: ElementWrapper | null, action: anyFunction, bindingId: string | number, actionParams: any[], transparentAction = false): void {
@@ -139,10 +149,7 @@ class ElementWrapper {
         this.parent = parent;
     }
 
-    /**
-     * @description We do not use any "virtual dom" to perform changes in the dom, so all we could need rom the parent is its HTMLElement
-     */
-    get $parentRawEl(): HTMLElement {
+    get $parentEl(): HTMLElement {
         return this.parent instanceof ElementWrapper ? this.parent.$el : this.parent;
     }
 
@@ -181,11 +188,11 @@ class ElementWrapper {
     }
 
     private addToDOM(): void {
-        this.$parentRawEl.appendChild(this.$el);
+        this.$parentEl?.appendChild(this.$el);
     }
     
     private removeFromDOM(): void {
-        this.$parentRawEl.removeChild(this.$el);
+        this.$parentEl?.removeChild(this.$el);
     }
 
     private cleanUpGarbage(): void {
@@ -321,6 +328,7 @@ class ElementWrapper {
  */
 class App {
     $root: HTMLElement;
+    reactiveVariables: Map<number, ReactiveVariable> = new Map()
 
     constructor(selector: string) {
         const foundEl = (document.querySelector(selector) as HTMLElement);
@@ -331,5 +339,11 @@ class App {
     createElement(tag: string, parent = this.$root): ElementWrapper {
         const el = new ElementWrapper(tag, parent);
         return el;
+    }
+
+    declareVariable(value: any, dependencies?: ReactiveVariable[]): ReactiveVariable {
+        const rv = new ReactiveVariable(value, dependencies);
+        this.reactiveVariables.set(rv.id, rv);
+        return rv;
     }
 }
