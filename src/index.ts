@@ -60,7 +60,7 @@ let globalVariableId = 0; // Necessary
 const allReactiveVariables: Map<number, ReactiveVariable> = new Map(); // Maybe useful
 
 type anyFunction = (...args: any) => any
-
+type conditionFunction = () => boolean
 /**
  * @description A reactive wrapper for variables.
  * Only a ReactiveVariable will cause changes on a ElementWrapper.
@@ -68,7 +68,14 @@ type anyFunction = (...args: any) => any
  class ReactiveVariable {
     // All actions to perform when the variable changes
     // [ElementWrapper, action-callback, action-uid, action-parameters]
-    actions: ([ElementWrapper, anyFunction, string, any[]])[] = [];
+    actions: 
+        {
+            ew: ElementWrapper,
+            action: anyFunction,
+            bindingId: string,
+            actionParams: any,
+            transparentAction: boolean,
+        }[] = [];
     id: number
     private _value: any
 
@@ -91,18 +98,21 @@ type anyFunction = (...args: any) => any
         return this._value;
     }
 
-    addAction(ew: ElementWrapper, action: anyFunction, id: string, actionParams: any[]): void {
-        this.actions.push([ew, action,  id, actionParams]);
+    addAction(ew: ElementWrapper, action: anyFunction, bindingId: string, actionParams: any[], transparentAction = false): void {
+        this.actions.push({ew, action, bindingId, actionParams, transparentAction});
     }
 
     performAllActionsFromLinkedElementWrappers(): void {
-        this.actions.forEach(action => { if(action[0].isMounted) action[1](...action[3])});
+        this.actions.forEach(action => {
+            if(action.transparentAction || (!action.transparentAction && action.ew.isMounted)) action.action(...action.actionParams)
+        });
     }
 
     triggerChangeChain(): void {
         this.performAllActionsFromLinkedElementWrappers()
     }
 }
+
 
 /**
  * @description This can be used to wrap any element (and maybe text-nodes).
@@ -116,7 +126,7 @@ type anyFunction = (...args: any) => any
 class ElementWrapper {
     private readonly $el: HTMLElement;
     private readonly parent: HTMLElement | ElementWrapper
-    private valueBindings: Map<string, ReactiveVariable> = new Map();
+    private reactiveVariableBindings: Map<string, ReactiveVariable> = new Map();
     private mounted = false;
     private beforeMountCb?: anyFunction;
     private mountedCb?: anyFunction;
@@ -156,7 +166,7 @@ class ElementWrapper {
     async mount(): Promise<void> {
         if(this.mounted) return console.warn('HTMLElement already mounted')
         if(this.beforeMountCb) await this.beforeMountCb();
-        this.$parentRawEl.appendChild(this.$el);
+        this.addToDOM();
         // this.liveChildren = this.$el.children;
         this.mounted = true;
         if(this.mountedCb) await this.mountedCb();
@@ -165,10 +175,18 @@ class ElementWrapper {
     async unmount(): Promise<void> {
         if(!this.mounted) return console.warn('HTMLElement already unmounted');
         if(this.beforeUnmountCb) await this.beforeUnmountCb();
-        this.$parentRawEl.removeChild(this.$el);
+        this.removeFromDOM();
         this.mounted = false;
         if(this.unmountedCb) await this.unmountedCb();
         this.cleanUpGarbage();
+    }
+
+    private addToDOM(): void {
+        this.$parentRawEl.appendChild(this.$el);
+    }
+    
+    private removeFromDOM(): void {
+        this.$parentRawEl.removeChild(this.$el);
     }
 
     private cleanUpGarbage(): void {
@@ -177,22 +195,52 @@ class ElementWrapper {
     }
 
     /**
-     * @description Binding this element to a reactive variable.
+     * @description Binding a ReactiveVariable to an action from this ElementWrapper
      */
-    private addActionAndElementToReactiveVariable(bindingId: string, rv: ReactiveVariable, action: anyFunction, actionParams: any[]): void {
-        this.valueBindings.set(bindingId, rv);
-        rv.addAction(this, action.bind(this), bindingId, actionParams);
+    private bindReactiveVariable(bindingId: string, rv: ReactiveVariable, action: anyFunction, actionParams: any[], transparentAction?: boolean): any {
+        if(this.reactiveVariableBindings.has(bindingId)) return console.warn('Tried to bind ReactiveVariable with and existing binding-id')
+        this.reactiveVariableBindings.set(bindingId, rv);
+        rv.addAction(this, action.bind(this), bindingId, actionParams, transparentAction);
     }
 
     /**
-     * @description Returning the "actual" value wanted and binding this element if the value is reactive
+     * 
+     * @param actionUid The unique-id for an action
+     * @param action The action function
+     * @param params The params that should be passed into the action-function
+     * @param bindingInfo Information about (existing) binding
+     * @param transparentAction Optional parameter - If action is transparent or not
+     * @description Here we bind an action and all of the ReactiveVariables that it depends on.
      */
-    private extractRawValueAndBindIfReactiveVariable(uid: string, val: any | ReactiveVariable, action: anyFunction, actionParams: any[]): any {
-        if(val instanceof ReactiveVariable) {
-            const bindingId = val.id + uid;
-            if(!this.valueBindings.has(bindingId)) this.addActionAndElementToReactiveVariable(bindingId, val, action, actionParams)
-            return val.value;
-        } else return val;
+    private bindReactiveVariablesToActionIfNotAlready(actionUid: string, action: anyFunction, params: any[], bindingInfo: [ReactiveVariable[], string[]?], transparentAction?: boolean): void {
+        // Little shortcut if we have already binded the action and its ReactiveVariables
+        const alreadyBindedCondition = bindingInfo[1]?.every((bId: any) => this.reactiveVariableBindings.has(bId));
+        if(alreadyBindedCondition) return
+        
+        // Will only be fired on first setup
+        const reactiveVariables = bindingInfo[0];
+        const createBindingId = (rv: ReactiveVariable): string => rv.id + actionUid;
+        const allBindingIds = reactiveVariables.map(rv => createBindingId(rv))
+        reactiveVariables.forEach((rv) => this.bindReactiveVariable(createBindingId(rv), rv, action, [...params, reactiveVariables, allBindingIds], transparentAction));
+    }
+
+
+    /**
+     * @param conditionAction The conditionallyRender-function
+     * @param params The params passed into the conditionallyRender-function
+     * @description Here we bind the conditionallyRender function and all of the ReactiveVariables that it depends on.
+     */
+    private bindRenderConditionIfNotAlready(conditionAction: anyFunction, params: [conditionFunction, ReactiveVariable[], string[]?]): void {
+        // Little shortcut if we have already binded the render-condition and its variables
+        const alreadyBindedCondition = params[2]?.every(bId => this.reactiveVariableBindings.has(bId));
+        if(alreadyBindedCondition) return
+        
+        // Will only be fired on first setup
+        const reactiveVariables = params[1];
+        const createBindingId = (rv: ReactiveVariable): string => rv.id + params[0].toString()
+        const allBindingIds = reactiveVariables.map(rv => createBindingId(rv))
+        const updatedParams = params.slice(0, 2).concat([allBindingIds]); // allBindings from the parameter is undefined on setup (because it is created here)
+        reactiveVariables.forEach((rv) => this.bindReactiveVariable(createBindingId(rv), rv, conditionAction, updatedParams, true));
     }
 
     /**
@@ -208,26 +256,39 @@ class ElementWrapper {
     }
 
     /**
-     * @description These are all the mutations that can be performed in a component.
-     * If the val is a ReactiveVariable then the mutation will be fired every time the ReactiveVariable is changed.
+    // @description These are all the mutations that can be performed in a component.
+    // If the val is a ReactiveVariable then the mutation will be fired every time the ReactiveVariable is changed.
+    */
+
+    /**
+     * @param rawCondition The condition which determines if element shouyld be rendered or not
+     * @param rv ReactiveVaribales that will trigger run the conditionallyRender function on value-change
+     * @param bindingIds Optional param - is used to ignore some steps if the ReactiveVariables are already binded
      */
+    conditionallyRender(rawCondition: conditionFunction, rv: ReactiveVariable[], bindingIds?: string[]): void {
+        this.bindRenderConditionIfNotAlready(this.conditionallyRender, [rawCondition, rv, bindingIds]);
+        if(rawCondition() && !this.mounted) this.mount();
+        else if(!rawCondition() && this.mounted) this.unmount();
+    }
 
     /**
      * @description This function should be used for all types of attributes
      */
-    setAttribute(attr: string, val: any | ReactiveVariable): void {
-        const uid = attr + 'attr';
-        const attribute = this.extractRawValueAndBindIfReactiveVariable(uid, val, this.setAttribute, [attr, val]);
-        this.$el.setAttribute(attr, attribute);
+    setAttribute(attr: string, val: unknown | anyFunction | ReactiveVariable, rv: ReactiveVariable[] = [], bindingIds?: string[]): void {
+        const actionUid = attr + 'attr';
+        this.bindReactiveVariablesToActionIfNotAlready(actionUid, this.setAttribute, [attr, val], [rv, bindingIds]);
+        const realValue = typeof val === 'function' ? val() : val instanceof ReactiveVariable ? val.value : val;
+        this.$el.setAttribute(attr, realValue);
     }
-
+    
     /**
      * @description danger danger ;)
      */
-    setInnerHTML(text: string | ReactiveVariable): void {
-        const uid = 'ihtml';
-        const innerHTML = this.extractRawValueAndBindIfReactiveVariable(uid, text, this.setInnerHTML, [text]);
-        this.$el.innerHTML = innerHTML;
+    setInnerHTML(text: unknown | anyFunction, rv: ReactiveVariable[] = [], bindingIds?: string[]): void {
+        const actionUid = 'ihtml'; 
+        this.bindReactiveVariablesToActionIfNotAlready(actionUid, this.setInnerHTML, [text], [rv, bindingIds]);
+        const realText = typeof text === 'function' ? text() : text instanceof ReactiveVariable ? text.value : text;
+        this.$el.innerHTML = realText
     }
 }
 
